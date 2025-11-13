@@ -28,7 +28,7 @@ export default function App() {
         <div className="container">
           <div className="bg-aurora" />
           {view==='landing' && <Landing onStart={()=>setView('home')} onRoutines={()=>setView('routines')} />}
-          {view==='home' && <Home />}
+          {view==='home' && <Home goRoutines={()=>setView('routines')} />}
           {view==='report' && <Report />}
           {view==='routines' && <Routines />}
           {view==='guard' && <Guard />}
@@ -70,7 +70,8 @@ function RowInput({label, children}:{label:string, children:React.ReactNode}){
   )
 }
 
-function Home(){
+function Home({ goRoutines }:{ goRoutines: ()=>void }){
+  useReveal()
   const [w, setW] = useState<WorkoutInput>(initWorkout)
   const [res, setRes] = useState<null|Awaited<ReturnType<typeof predict>>>(null)
   useEffect(()=>{ predict(w).then(setRes).catch(()=>{}) }, [w])
@@ -82,18 +83,21 @@ function Home(){
 
   return (
     <>
-      <div className="card">
+      <div className="card soft reveal tilt" {...tiltHandlers()}>
         <div className="row" style={{justifyContent:'space-between'}}>
-          <div>
-            <div className="muted">오늘의 컨디션</div>
-            <div className="kpi">{res?.fatigue_score ?? '—'}점</div>
+          <div className="row" style={{gap:10}}>
+            <div className="icon-circle float"><span>🧡</span></div>
+            <div>
+              <div className="muted">오늘의 컨디션</div>
+              <div className="kpi">{res?.fatigue_score ?? '—'}점</div>
+            </div>
           </div>
           <div className={`pill ${riskLabel==='red'?'danger':riskLabel==='yellow'?'warn':''}`}>과훈련 위험도 • {riskLabel}</div>
         </div>
-        <div className="footer">운동기록은 부드럽게 참고만, 몸의 신호가 먼저예요</div>
+        <div className="footer">지표는 부드럽게 참고만, 몸의 신호가 먼저예요</div>
       </div>
 
-      <div className="card">
+      <div className="card soft reveal tilt" {...tiltHandlers()}>
         <div className="title" style={{marginBottom: 8}}>오늘 기록</div>
         <div className="two">
           <RowInput label="운동 시간(분)"><input type="number" value={w.duration_min} onChange={e=>setW({...w, duration_min: Number(e.target.value)})}/></RowInput>
@@ -107,17 +111,24 @@ function Home(){
         </div>
       </div>
 
-      <div className="card">
+      <div className="card soft reveal tilt" {...tiltHandlers()}>
         <div className="title" style={{marginBottom: 10}}>포근한 휴식 타이밍</div>
-        <div className="row" style={{gap: 10}}>
-          {res?.recovery_windows.map(w => (
-            <div key={w.label} className="grow" style={{minWidth: 200}}>
+        <div className="grid-3">
+          {res?.recovery_windows.map((rw, i) => (
+            <div key={rw.label} className="card soft reveal tilt" style={{marginBottom:0}} {...tiltHandlers()}>
               <div className="row" style={{justifyContent:'space-between'}}>
-                <div className="muted">{w.label}</div>
-                <div className="tag">휴식하면 예상 +{w.expected_roi_pct}%</div>
+                <div className="row" style={{gap:8}}>
+                  <div className="icon-circle"><span>{windowIcon(rw.label)}</span></div>
+                  <div className="muted">{rw.label}</div>
+                </div>
+                <div className="tag">예상 +{rw.expected_roi_pct}%</div>
               </div>
-              <div className="kpi" style={{fontSize:22}}>{w.recommend_min}분</div>
-              <div className="muted">{w.note}</div>
+              <div className="kpi" style={{fontSize:24, marginTop:4}}>{rw.recommend_min}분</div>
+              <div className="muted" style={{marginBottom:10}}>{rw.note}</div>
+              <div className="row" style={{justifyContent:'space-between'}}>
+                <div className="muted">지금 시작하면 더 가벼워요</div>
+                <button className="btn" onClick={goRoutines}>루틴 추천</button>
+              </div>
             </div>
           ))}
         </div>
@@ -436,4 +447,11 @@ function tiltHandlers(){
     el.style.removeProperty('--rx'); el.style.removeProperty('--ry'); el.style.removeProperty('--tx'); el.style.removeProperty('--ty')
   }
   return { onMouseEnter: onEnter, onMouseMove: onMove, onMouseLeave: onLeave }
+}
+
+function windowIcon(label: string){
+  if (label.includes('즉시')) return '⏱️'
+  if (label.includes('단기')) return '☕️'
+  if (label.includes('야간')) return '🌙'
+  return '🫶'
 }
