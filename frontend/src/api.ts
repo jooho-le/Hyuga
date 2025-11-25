@@ -12,9 +12,14 @@ export type WorkoutInput = {
   hi_streak_days: number
 }
 
-export async function predict(inp: WorkoutInput) {
-  const res = await fetch('/api/predict', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(inp) })
-  if (!res.ok) throw new Error('predict failed')
+export async function predict(inp: WorkoutInput, token?: string) {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (token) headers.Authorization = `Bearer ${token}`
+  const res = await fetch('/api/predict', { method: 'POST', headers, body: JSON.stringify(inp) })
+  if (!res.ok) {
+    const msg = await res.text().catch(() => '')
+    throw new Error(msg || 'predict failed')
+  }
   return res.json() as Promise<{
     fatigue_score: number
     recovery_windows: { label: string; recommend_min: number; expected_roi_pct: number; note?: string }[]
@@ -54,3 +59,93 @@ export async function coach() {
   return res.json() as Promise<{ alerts: string[] }>
 }
 
+// Routine run + report
+export async function logRoutineRun(body: { title: string; duration_min?: number; note?: string }, token: string) {
+  const res = await fetch('/api/routines/run', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export type ReportSummary = {
+  total_predictions: number
+  last_fatigue: number | null
+  last_overtraining_risk: string | null
+  avg_fatigue: number | null
+  routine_runs: number
+  last_run_title: string | null
+  last_run_at: string | null
+  last_roi_pct: number | null
+  recent_windows: { label: string; recommend_min: number; expected_roi_pct: number; note?: string }[] | null
+}
+
+export async function fetchReportLatest(token: string) {
+  const res = await fetch('/api/report/latest', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json() as Promise<ReportSummary>
+}
+
+// Auth
+export type UserPublic = {
+  id: number
+  email: string
+  name: string
+  created_at: string
+}
+
+export async function registerUser(body: { email: string; password: string; name?: string }) {
+  const res = await fetch('/api/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json() as Promise<{ token: string; user: UserPublic }>
+}
+
+export async function loginUser(body: { email: string; password: string }) {
+  const res = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json() as Promise<{ token: string; user: UserPublic }>
+}
+
+export async function fetchMe(token: string) {
+  const res = await fetch('/api/auth/me', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json() as Promise<UserPublic>
+}
+
+export async function updateMe(token: string, body: { name?: string; password?: string }) {
+  const res = await fetch('/api/auth/me', {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json() as Promise<UserPublic>
+}
+
+export async function deleteMe(token: string) {
+  const res = await fetch('/api/auth/me', {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) throw new Error(await res.text())
+}

@@ -5,6 +5,8 @@ import { ReportPage } from './pages/ReportPage'
 import { RoutinesPage } from './pages/RoutinesPage'
 import { StartPage } from './pages/StartPage'
 import { ProfilePage } from './pages/ProfilePage'
+import { LoginPage } from './pages/LoginPage'
+import { SignupPage } from './pages/SignupPage'
 
 export default function App() {
   return (
@@ -16,6 +18,8 @@ export default function App() {
         <Route path="/routines" element={<RoutinesPage />} />
         <Route path="/start" element={<StartPage />} />
         <Route path="/profile" element={<ProfilePage />} />
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/signup" element={<SignupPage />} />
       </Routes>
       <Footer />
     </div>

@@ -1,12 +1,15 @@
 import { useNavigate } from 'react-router-dom'
 import { useReveal } from '../hooks/useReveal'
+import { ExampleNotice, useExampleMode } from '../components/ExampleNotice'
 
 export function HomePage() {
   useReveal()
   const navigate = useNavigate()
+  const exampleMode = useExampleMode()
 
   return (
     <div className="view view-home">
+      {exampleMode && <ExampleNotice />}
       <section className="hero hero-full reveal">
         <div className="hero-content hero-left">
           <p className="hero-kicker">운동 피로도 예측 기반 · 휴식 타이밍 알림</p>

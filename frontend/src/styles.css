@@ -60,6 +60,11 @@ body {
 .top-brand {
   display: flex;
   flex-direction: column;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  align-items: flex-start;
 }
 
 .top-logo {
@@ -180,6 +185,32 @@ body {
   align-items: center;
 }
 
+.routines-subnav,
+.routines-guide {
+  width: min(1180px, 100% - 40px);
+  margin: 0 auto;
+}
+
+.routines-subnav-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.routines-subnav-grid button {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: #fff7f3;
+  cursor: pointer;
+  text-align: left;
+  font-weight: 700;
+}
+
+.routines-subnav-grid button:hover {
+  background: #ffe8dd;
+}
+
 .routines-visual {
   position: relative;
 }
@@ -222,6 +253,30 @@ body {
 .cloud-right {
   right: -10px;
   background: #e0f2ff;
+}
+
+.example-notice {
+  width: min(1180px, 100% - 40px);
+  margin: 0 auto 12px;
+  padding: 12px 16px;
+  border: 1px dashed var(--border);
+  border-radius: 14px;
+  background: #fff7f3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.example-notice.compact {
+  width: 100%;
+}
+
+.example-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .routines-copy h1 {

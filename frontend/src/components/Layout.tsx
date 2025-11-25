@@ -1,8 +1,13 @@
+import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
+import { fetchMe } from '../api'
+import { clearStoredToken, getStoredToken } from '../auth'
 
 export function Header() {
   const navigate = useNavigate()
   const location = useLocation()
+  const [userName, setUserName] = useState<string | null>(null)
+  const [hasToken, setHasToken] = useState<boolean>(!!getStoredToken())
 
   const activeKey =
     location.pathname === '/report'
@@ -12,6 +17,22 @@ export function Header() {
       : location.pathname === '/profile'
       ? 'profile'
       : 'home'
+
+  useEffect(() => {
+    const token = getStoredToken()
+    setHasToken(!!token)
+    if (!token) {
+      setUserName(null)
+      return
+    }
+    fetchMe(token)
+      .then(user => setUserName(user.name || user.email))
+      .catch(() => {
+        clearStoredToken()
+        setUserName(null)
+        setHasToken(false)
+      })
+  }, [location.pathname])
 
   return (
     <header className="top-bar">
@@ -23,8 +44,7 @@ export function Header() {
           window.scrollTo({ top: 0, behavior: 'smooth' })
         }}
       >
-        <span className="top-logo">HYUGA</span>
-        <span className="top-sub">rest timing studio</span>
+        <img src="/hugalogo.png" alt="Hyuga" style={{ height: 44 }} />
       </button>
 
       <nav className="top-nav" aria-label="Primary navigation">
@@ -51,16 +71,45 @@ export function Header() {
       >
         피로도 무료 측정
       </button>
-      <button
-        type="button"
-        className={`top-profile-btn ${activeKey === 'profile' ? 'active' : ''}`}
-        onClick={() => navigate('/profile')}
-        aria-label="프로필로 이동"
-      >
-        <span className="top-profile-avatar" aria-hidden="true">
-          🙂
-        </span>
-      </button>
+      <div className="top-auth-wrap">
+        {userName ? (
+          <button
+            type="button"
+            className={`top-profile-btn ${activeKey === 'profile' ? 'active' : ''}`}
+            onClick={() => navigate('/profile')}
+            aria-label="프로필로 이동"
+          >
+            <span className="top-profile-avatar" aria-hidden="true">
+              🙂
+            </span>
+            <span className="top-profile-name">{userName}</span>
+          </button>
+        ) : (
+          <>
+            <button type="button" className="btn btn-tonal top-auth-btn" onClick={() => navigate('/login')}>
+              로그인
+            </button>
+            <button type="button" className="top-profile-btn" onClick={() => navigate('/signup')}>
+              회원가입
+            </button>
+          </>
+        )}
+        {hasToken && (
+          <button
+            type="button"
+            className="btn btn-chip"
+            onClick={() => {
+              clearStoredToken()
+              setUserName(null)
+              setHasToken(false)
+              navigate('/')
+            }}
+            style={{ marginLeft: 8 }}
+          >
+            로그아웃
+          </button>
+        )}
+      </div>
     </header>
   )
 }

@@ -1,19 +1,19 @@
-import { useEffect, useState, FormEvent } from 'react'
+import { useEffect, useMemo, useState, FormEvent } from 'react'
 import dayjs from 'dayjs'
 import { useReveal } from '../hooks/useReveal'
 import { HabitCard, ReminderCard } from '../components/RoutineCards'
+import { ExampleNotice, useExampleMode } from '../components/ExampleNotice'
+import { logRoutineRun } from '../api'
+import { getStoredToken } from '../auth'
 
 type RoutineTodo = { title: string; date: string; time: string }
 
 export function RoutinesPage() {
   useReveal()
+  const exampleMode = useExampleMode()
 
-  const today = dayjs()
-  const [todos, setTodos] = useState<RoutineTodo[]>([
-    { title: '하체 스트레칭 5분', date: today.format('YYYY-MM-DD'), time: '07:00' },
-    { title: '복식 호흡 3분', date: today.format('YYYY-MM-DD'), time: '09:00' },
-    { title: '폼롤링 10분', date: today.add(1, 'day').format('YYYY-MM-DD'), time: '18:30' },
-  ])
+  const today = useMemo(() => dayjs(), [])
+  const [todos, setTodos] = useState<RoutineTodo[]>([])
   const [todoInput, setTodoInput] = useState('')
   const [todoDate, setTodoDate] = useState(today.format('YYYY-MM-DD'))
   const [todoTime, setTodoTime] = useState('12:00')
@@ -21,6 +21,20 @@ export function RoutinesPage() {
   const [isRunning, setIsRunning] = useState(false)
   const [selectedQuick, setSelectedQuick] = useState<{ title: string; time?: string } | null>(null)
   const [showModal, setShowModal] = useState(false)
+  const [logMsg, setLogMsg] = useState('')
+
+  useEffect(() => {
+    if (exampleMode) {
+      setTodos([
+        { title: '하체 스트레칭 5분', date: today.format('YYYY-MM-DD'), time: '07:00' },
+        { title: '복식 호흡 3분', date: today.format('YYYY-MM-DD'), time: '09:00' },
+        { title: '폼롤링 10분', date: today.add(1, 'day').format('YYYY-MM-DD'), time: '18:30' },
+      ])
+    } else {
+      setTodos([])
+      setSelectedRun('')
+    }
+  }, [exampleMode, today])
 
   useEffect(() => {
     if (!selectedRun && todos[0]) setSelectedRun(todos[0].title)
@@ -67,8 +81,14 @@ export function RoutinesPage() {
     calendarWeeks.push(calendarCells.slice(i, i + 7))
   }
 
+  const scrollTo = (id: string) => {
+    const el = document.getElementById(id)
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
   return (
     <main className="shell view view-page routines-page">
+      {exampleMode && <ExampleNotice />}
       <section className="routines-hero reveal">
         <div className="routines-visual" aria-hidden="true">
           <div className="routines-illust">
@@ -84,11 +104,11 @@ export function RoutinesPage() {
             근육 피로, 수면 부족, 정신 과부하별로 짧고 효율적인 루틴을 큐레이션합니다.
           </p>
           <div className="hero-actions">
-            <button type="button" className="btn btn-primary">
+            <button type="button" className="btn btn-primary" onClick={() => scrollTo('section-quick')}>
               지금 바로 루틴 시작하기
             </button>
-            <button type="button" className="btn btn-tonal">
-              오늘 컨디션에 맞는 루틴 보기
+            <button type="button" className="btn btn-tonal" onClick={() => scrollTo('section-run')}>
+              실행/게이지 보러가기
             </button>
           </div>
         </div>
@@ -106,12 +126,24 @@ export function RoutinesPage() {
         </div>
       </section>
 
-      <section className="section reveal">
+      <section className="section reveal routines-subnav">
         <div className="section-header">
-          <h2>오늘의 회복 보드</h2>
-          <p className="section-sub">습관 카드 · 리마인더 · To-do + 캘린더로 하루 회복을 설계하세요.</p>
+          <h2>무엇을 할 수 있나요?</h2>
+          <p className="section-sub">아래 네 단계로 필요한 기능만 빠르게 이동하세요.</p>
         </div>
+        <div className="routines-subnav-grid">
+          <button type="button" onClick={() => scrollTo('section-quick')}>1) 빠른 실행 카드</button>
+          <button type="button" onClick={() => scrollTo('section-todo')}>2) 오늘 일정 추가</button>
+          <button type="button" onClick={() => scrollTo('section-calendar')}>3) 달력에서 일정 확인</button>
+          <button type="button" onClick={() => scrollTo('section-run')}>4) 실행 · 게이지</button>
+        </div>
+      </section>
 
+      <section className="section reveal routines-guide" id="section-quick">
+        <div className="section-header">
+          <h2>1) 빠른 실행 카드</h2>
+          <p className="section-sub">카드를 눌러 오늘 할 루틴을 고르고 바로 To-do에 추가하세요.</p>
+        </div>
         <div className="routines-board">
           <div className="routines-column">
             <div className="board-card board-habits">
@@ -119,31 +151,40 @@ export function RoutinesPage() {
                 <h3>오늘의 루틴 카드</h3>
                 <span className="pill pill-yellow">3~10분</span>
               </div>
-              <div className="habit-row">
-                <HabitCard title="스트레칭" time="07:00 · 5분" color="mint" onSelect={() => handleSelect('하체 스트레칭 5분', '07:00')} />
-                <HabitCard title="복식 호흡" time="09:00 · 3분" color="lavender" onSelect={() => handleSelect('복식 호흡 3분', '09:00')} />
-                <HabitCard title="파워냅" time="13:00 · 15분" color="orange" onSelect={() => handleSelect('파워냅 15분', '13:00')} />
-                <HabitCard title="산책" time="16:00 · 10분" color="blue" onSelect={() => handleSelect('산책 10분', '16:00')} />
-              </div>
+              {exampleMode ? (
+                <div className="habit-row">
+                  <HabitCard title="스트레칭" time="07:00 · 5분" color="mint" onSelect={() => handleSelect('하체 스트레칭 5분', '07:00')} />
+                  <HabitCard title="복식 호흡" time="09:00 · 3분" color="lavender" onSelect={() => handleSelect('복식 호흡 3분', '09:00')} />
+                  <HabitCard title="파워냅" time="13:00 · 15분" color="orange" onSelect={() => handleSelect('파워냅 15분', '13:00')} />
+                  <HabitCard title="산책" time="16:00 · 10분" color="blue" onSelect={() => handleSelect('산책 10분', '16:00')} />
+                </div>
+              ) : (
+                <p className="muted">아직 등록된 루틴 카드가 없습니다.</p>
+              )}
             </div>
 
-            <div className="board-card board-reminders">
+            <div className="board-card board-reminders" id="section-todo">
               <div className="board-head">
                 <h3>리마인더</h3>
                 <span className="pill">Today</span>
               </div>
-              <div className="reminder-grid">
-                <ReminderCard title="Gym Session Week 3" tag="workout" time="15:00" onSelect={() => handleSelect('Gym Session Week 3', '15:00')} />
-                <ReminderCard title="폼롤링 체크" tag="recovery" time="18:30" onSelect={() => handleSelect('폼롤링 체크', '18:30')} />
-                <ReminderCard title="수면 준비" tag="sleep" time="23:00" onSelect={() => handleSelect('수면 준비', '23:00')} />
-              </div>
+              {exampleMode ? (
+                <div className="reminder-grid">
+                  <ReminderCard title="Gym Session Week 3" tag="workout" time="15:00" onSelect={() => handleSelect('Gym Session Week 3', '15:00')} />
+                  <ReminderCard title="폼롤링 체크" tag="recovery" time="18:30" onSelect={() => handleSelect('폼롤링 체크', '18:30')} />
+                  <ReminderCard title="수면 준비" tag="sleep" time="23:00" onSelect={() => handleSelect('수면 준비', '23:00')} />
+                </div>
+              ) : (
+                <p className="muted">리마인더가 없습니다. To-do에 일정을 추가하세요.</p>
+              )}
             </div>
 
             <div className="board-card board-todo">
               <div className="board-head">
-                <h3>To-do 리스트</h3>
+                <h3>2) 오늘 To-do 추가</h3>
                 <span className="pill pill-green">체크</span>
               </div>
+              <p className="muted">카드/리마인더를 누르면 자동 추가됩니다. 직접 추가도 가능해요.</p>
               <form className="todo-add" onSubmit={addTodo}>
                 <input
                   type="text"
@@ -174,10 +215,10 @@ export function RoutinesPage() {
             </div>
           </div>
 
-          <div className="routines-column narrow">
+          <div className="routines-column narrow" id="section-calendar">
             <div className="board-card board-calendar">
               <div className="board-head">
-                <h3>루틴 캘린더</h3>
+                <h3>3) 루틴 캘린더</h3>
                 <span className="pill">{monthLabel}</span>
               </div>
               <div className="routine-calendar">
@@ -220,7 +261,7 @@ export function RoutinesPage() {
 
       <section className="section reveal">
         <div className="section-header">
-          <h2>선택한 루틴 실행하기</h2>
+          <h2 id="section-run">4) 선택한 루틴 실행하기</h2>
           <p className="section-sub">
             3~10분만 투자해도 회복 게이지가 조금씩 채워집니다. 하체 위주라면 스트레칭·호흡 위주로
             안내드릴게요.
@@ -257,11 +298,23 @@ export function RoutinesPage() {
                 <button
                   type="button"
                   className="btn btn-primary"
-                  onClick={() => {
+                  onClick={async () => {
                     const target = selectedRun || todos[0]?.title
                     if (target) {
                       setSelectedRun(target)
                       setIsRunning(true)
+                      setLogMsg('')
+                      const token = getStoredToken()
+                      if (token) {
+                        try {
+                          await logRoutineRun({ title: target, duration_min: 10, note: 'run from UI' }, token)
+                          setLogMsg('실행이 저장되었습니다.')
+                        } catch (err) {
+                          setLogMsg('서버에 실행 기록을 저장하지 못했습니다.')
+                        }
+                      } else {
+                        setLogMsg('로그인 시 실행 기록이 저장됩니다.')
+                      }
                     }
                   }}
                 >
@@ -291,6 +344,7 @@ export function RoutinesPage() {
                 "{selectedRun}" 실행 중입니다. 완료 후 체크하세요.
               </p>
             )}
+            {logMsg && <p className="muted">{logMsg}</p>}
           </article>
         </div>
       </section>

@@ -1,7 +1,12 @@
 from typing import List, Optional
-from fastapi import FastAPI
+import hashlib
+import secrets
+import sqlite3
+import json
+from pathlib import Path
+from fastapi import FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
 from datetime import datetime, timedelta
 
 
@@ -14,6 +19,64 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+DB_PATH = Path(__file__).parent / "hyuga.db"
+
+
+def _get_db():
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def _init_db():
+    conn = _get_db()
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            name TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS tokens (
+            token TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS user_todos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            date TEXT NOT NULL,
+            time TEXT NOT NULL,
+            is_done INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS user_predictions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            payload_json TEXT NOT NULL,
+            result_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS user_routine_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            duration_min INTEGER DEFAULT 0,
+            note TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_db()
 
 
 class WorkoutInput(BaseModel):
@@ -74,6 +137,74 @@ class GuardDay(BaseModel):
     risk: str  # green/yellow/red
 
 
+class UserCreate(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8)
+    name: str = Field(default="", max_length=50)
+
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class UserUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=50)
+    password: Optional[str] = Field(default=None, min_length=8)
+
+
+class UserPublic(BaseModel):
+    id: int
+    email: EmailStr
+    name: str
+    created_at: datetime
+
+
+class AuthToken(BaseModel):
+    token: str
+    user: UserPublic
+
+
+class RoutineRunCreate(BaseModel):
+    title: str
+    duration_min: Optional[int] = 0
+    note: Optional[str] = ''
+
+
+class ReportSummary(BaseModel):
+    total_predictions: int
+    last_fatigue: Optional[int]
+    last_overtraining_risk: Optional[str]
+    avg_fatigue: Optional[float]
+    routine_runs: int
+    last_run_title: Optional[str]
+    last_run_at: Optional[str]
+    last_roi_pct: Optional[int]
+    recent_windows: Optional[List[RecoveryWindow]]
+
+
+class TodoCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    date: str = Field(description="YYYY-MM-DD")
+    time: str = Field(description="HH:MM")
+
+
+class TodoUpdate(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    date: Optional[str] = None
+    time: Optional[str] = None
+    is_done: Optional[bool] = None
+
+
+class TodoOut(BaseModel):
+    id: int
+    title: str
+    date: str
+    time: str
+    is_done: bool
+    created_at: datetime
+
+
 def _session_trimp(inp: WorkoutInput) -> float:
     if inp.avg_hr and inp.max_hr:
         hr_ratio = max(0.0, min(1.0, (inp.avg_hr) / float(inp.max_hr)))
@@ -119,8 +250,271 @@ def _risk_bucket(fatigue: int, sleep_debt: float, hi_streak: int) -> Optional[st
     return None
 
 
+def _hash_password(raw: str) -> str:
+    salt = secrets.token_hex(16)
+    hashed = hashlib.pbkdf2_hmac("sha256", raw.encode("utf-8"), salt.encode("utf-8"), 120_000)
+    return f"{salt}${hashed.hex()}"
+
+
+def _verify_password(raw: str, stored: str) -> bool:
+    try:
+        salt, hex_hash = stored.split("$", 1)
+    except ValueError:
+        return False
+    new_hash = hashlib.pbkdf2_hmac("sha256", raw.encode("utf-8"), salt.encode("utf-8"), 120_000)
+    return secrets.compare_digest(new_hash.hex(), hex_hash)
+
+
+def _row_to_user(row: sqlite3.Row) -> UserPublic:
+    return UserPublic(
+        id=row["id"],
+        email=row["email"],
+        name=row["name"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+    )
+
+
+def _issue_token(conn: sqlite3.Connection, user_id: int) -> str:
+    token = secrets.token_urlsafe(32)
+    now = datetime.utcnow().isoformat()
+    conn.execute(
+        "INSERT OR REPLACE INTO tokens (token, user_id, created_at) VALUES (?, ?, ?)",
+        (token, user_id, now),
+    )
+    conn.commit()
+    return token
+
+
+def _get_user_by_token(authorization: Optional[str]) -> UserPublic:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="토큰이 필요합니다.")
+    token = authorization.split(" ", 1)[1]
+    conn = _get_db()
+    try:
+        cur = conn.execute(
+            """
+            SELECT u.* FROM tokens t
+            JOIN users u ON u.id = t.user_id
+            WHERE t.token = ?
+            """,
+            (token,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="유효하지 않은 토큰입니다.")
+        return _row_to_user(row)
+    finally:
+        conn.close()
+
+
+def _todo_row_to_out(row: sqlite3.Row) -> TodoOut:
+    return TodoOut(
+        id=row["id"],
+        title=row["title"],
+        date=row["date"],
+        time=row["time"],
+        is_done=bool(row["is_done"]),
+        created_at=datetime.fromisoformat(row["created_at"]),
+    )
+
+
+@app.post("/api/auth/register", response_model=AuthToken, status_code=status.HTTP_201_CREATED)
+def register_user(payload: UserCreate):
+    conn = _get_db()
+    try:
+        existing = conn.execute("SELECT id FROM users WHERE email = ?", (payload.email,)).fetchone()
+        if existing:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="이미 가입된 이메일입니다.")
+        password_hash = _hash_password(payload.password)
+        created_at = datetime.utcnow().isoformat()
+        cur = conn.execute(
+            "INSERT INTO users (email, password_hash, name, created_at) VALUES (?, ?, ?, ?)",
+            (payload.email, password_hash, payload.name, created_at),
+        )
+        user_id = cur.lastrowid
+        conn.commit()
+        token = _issue_token(conn, user_id)
+        user_row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return AuthToken(token=token, user=_row_to_user(user_row))
+    finally:
+        conn.close()
+
+
+@app.post("/api/auth/login", response_model=AuthToken)
+def login_user(payload: UserLogin):
+    conn = _get_db()
+    try:
+        row = conn.execute("SELECT * FROM users WHERE email = ?", (payload.email,)).fetchone()
+        if not row or not _verify_password(payload.password, row["password_hash"]):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="이메일 또는 비밀번호가 올바르지 않습니다.")
+        token = _issue_token(conn, row["id"])
+        return AuthToken(token=token, user=_row_to_user(row))
+    finally:
+        conn.close()
+
+
+@app.get("/api/auth/me", response_model=UserPublic)
+def get_me(authorization: Optional[str] = Header(default=None, alias="Authorization")):
+    return _get_user_by_token(authorization)
+
+
+@app.put("/api/auth/me", response_model=UserPublic)
+def update_me(
+    payload: UserUpdate,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+):
+    user = _get_user_by_token(authorization)
+    conn = _get_db()
+    try:
+        updates = {}
+        if payload.name is not None:
+            updates["name"] = payload.name
+        if payload.password:
+            updates["password_hash"] = _hash_password(payload.password)
+        if updates:
+            set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
+            conn.execute(
+                f"UPDATE users SET {set_clause} WHERE id = ?",
+                (*updates.values(), user.id),
+            )
+            conn.commit()
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user.id,)).fetchone()
+        return _row_to_user(row)
+    finally:
+        conn.close()
+
+
+@app.delete("/api/auth/me", status_code=status.HTTP_204_NO_CONTENT)
+def delete_me(authorization: Optional[str] = Header(default=None, alias="Authorization")):
+    user = _get_user_by_token(authorization)
+    conn = _get_db()
+    try:
+        conn.execute("DELETE FROM users WHERE id = ?", (user.id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return
+
+
+@app.get("/api/todos", response_model=List[TodoOut])
+def list_todos(authorization: Optional[str] = Header(default=None, alias="Authorization")):
+    user = _get_user_by_token(authorization)
+    conn = _get_db()
+    try:
+        cur = conn.execute(
+            """
+            SELECT * FROM user_todos
+            WHERE user_id = ?
+            ORDER BY date ASC, time ASC, created_at ASC
+            """,
+            (user.id,),
+        )
+        rows = cur.fetchall()
+        return [_todo_row_to_out(r) for r in rows]
+    finally:
+        conn.close()
+
+
+@app.post("/api/todos", response_model=TodoOut, status_code=status.HTTP_201_CREATED)
+def create_todo(payload: TodoCreate, authorization: Optional[str] = Header(default=None, alias="Authorization")):
+    user = _get_user_by_token(authorization)
+    conn = _get_db()
+    try:
+        now = datetime.utcnow().isoformat()
+        cur = conn.execute(
+            """
+            INSERT INTO user_todos (user_id, title, date, time, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (user.id, payload.title.strip(), payload.date, payload.time, now),
+        )
+        todo_id = cur.lastrowid
+        conn.commit()
+        row = conn.execute("SELECT * FROM user_todos WHERE id = ?", (todo_id,)).fetchone()
+        return _todo_row_to_out(row)
+    finally:
+        conn.close()
+
+
+@app.put("/api/todos/{todo_id}", response_model=TodoOut)
+def update_todo(
+    todo_id: int,
+    payload: TodoUpdate,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+):
+    user = _get_user_by_token(authorization)
+    conn = _get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM user_todos WHERE id = ? AND user_id = ?",
+            (todo_id, user.id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="항목을 찾을 수 없습니다.")
+        updates = {}
+        if payload.title is not None:
+            updates["title"] = payload.title.strip()
+        if payload.date is not None:
+            updates["date"] = payload.date
+        if payload.time is not None:
+            updates["time"] = payload.time
+        if payload.is_done is not None:
+            updates["is_done"] = 1 if payload.is_done else 0
+        if updates:
+            set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
+            conn.execute(
+                f"UPDATE user_todos SET {set_clause} WHERE id = ? AND user_id = ?",
+                (*updates.values(), todo_id, user.id),
+            )
+            conn.commit()
+        row = conn.execute(
+            "SELECT * FROM user_todos WHERE id = ? AND user_id = ?",
+            (todo_id, user.id),
+        ).fetchone()
+        return _todo_row_to_out(row)
+    finally:
+        conn.close()
+
+
+@app.delete("/api/todos/{todo_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_todo(todo_id: int, authorization: Optional[str] = Header(default=None, alias="Authorization")):
+    user = _get_user_by_token(authorization)
+    conn = _get_db()
+    try:
+        conn.execute(
+            "DELETE FROM user_todos WHERE id = ? AND user_id = ?",
+            (todo_id, user.id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return
+
+
+@app.post("/api/routines/run", status_code=status.HTTP_201_CREATED)
+def run_routine(payload: RoutineRunCreate, authorization: Optional[str] = Header(default=None, alias="Authorization")):
+    user = _get_user_by_token(authorization)
+    conn = _get_db()
+    try:
+        conn.execute(
+            """
+            INSERT INTO user_routine_runs (user_id, title, duration_min, note, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (user.id, payload.title, payload.duration_min or 0, payload.note or '', datetime.utcnow().isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True}
+
+
 @app.post("/api/predict", response_model=PredictOutput)
-def predict(inp: WorkoutInput):
+def predict(
+    inp: WorkoutInput,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+):
+    user = _get_user_by_token(authorization)
     fatigue = _fatigue_score(inp)
     sleep_debt = max(0.0, 8.0 - inp.sleep_hours)
     risk = _risk_bucket(fatigue, sleep_debt, inp.hi_streak_days)
@@ -139,11 +533,27 @@ def predict(inp: WorkoutInput):
         for w in windows:
             w.recommend_min = int(w.recommend_min * 1.1)
 
-    return PredictOutput(fatigue_score=fatigue, recovery_windows=windows, overtraining_risk=risk)
+    result = PredictOutput(fatigue_score=fatigue, recovery_windows=windows, overtraining_risk=risk)
+    # 저장
+    conn = _get_db()
+    try:
+        conn.execute(
+            "INSERT INTO user_predictions (user_id, payload_json, result_json, created_at) VALUES (?, ?, ?, ?)",
+            (user.id, json.dumps(inp.model_dump()), json.dumps(result.model_dump()), datetime.utcnow().isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return result
 
 
 @app.post("/api/roi-report", response_model=ROIReportOutput)
-def roi_report(inp: ROIReportInput):
+def roi_report(
+    inp: ROIReportInput,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+):
+    user = _get_user_by_token(authorization)
     points: List[ROIDataPoint] = []
     total_work = 0.0
     total_recov = 0.0
@@ -172,16 +582,31 @@ def roi_report(inp: ROIReportInput):
     elif efficiency >= 65:
         badge = "Silver"
 
-    return ROIReportOutput(
+    result = ROIReportOutput(
         recovery_efficiency_score=efficiency,
         weekly_recovery_ratio=points,
         expected_next_performance_change_pct=perf_change,
         rest_accrual_badge=badge,
     )
+    conn = _get_db()
+    try:
+        conn.execute(
+            "INSERT INTO user_predictions (user_id, payload_json, result_json, created_at) VALUES (?, ?, ?, ?)",
+            (user.id, json.dumps({"weekly_sessions": [w.model_dump() for w in inp.weekly_sessions]}), json.dumps(result.model_dump()), datetime.utcnow().isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return result
 
 
 @app.get("/api/routines", response_model=List[Routine])
-def routines(type: Optional[str] = None, wind: Optional[float] = None):
+def routines(
+    type: Optional[str] = None,
+    wind: Optional[float] = None,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+):
+    _get_user_by_token(authorization)
     base = [
         Routine(title="4-7-8 브리딩", minutes=3, type="breathing", steps=["4초 들이마시기", "7초 멈춤", "8초 내쉬기", "5회 반복"]),
         Routine(title="하체 스트레칭", minutes=5, type="stretch", steps=["햄스트링 60초", "종아리 60초", "둔근 60초", "3세트"]),
@@ -200,8 +625,65 @@ def routines(type: Optional[str] = None, wind: Optional[float] = None):
     return out[:4]
 
 
+@app.get("/api/report/latest", response_model=ReportSummary)
+def report_latest(authorization: Optional[str] = Header(default=None, alias="Authorization")):
+    user = _get_user_by_token(authorization)
+    conn = _get_db()
+    try:
+        # 예측 통계
+        cur = conn.execute(
+            "SELECT result_json, created_at FROM user_predictions WHERE user_id = ? ORDER BY created_at DESC LIMIT 50",
+            (user.id,),
+        )
+        rows = cur.fetchall()
+        total_predictions = len(rows)
+        last_fatigue = None
+        last_risk = None
+        last_windows = None
+        fat_scores: List[int] = []
+        last_roi_pct = None
+        if rows:
+            last = rows[0]
+            res = json.loads(last["result_json"])
+            last_fatigue = res.get("fatigue_score")
+            last_risk = res.get("overtraining_risk")
+            last_windows = res.get("recovery_windows")
+        for r in rows:
+            data = json.loads(r["result_json"])
+            if "fatigue_score" in data:
+                fat_scores.append(int(data["fatigue_score"]))
+            if data.get("recovery_windows"):
+                last_roi_pct = data["recovery_windows"][0].get("expected_roi_pct")
+        avg_fatigue = round(sum(fat_scores) / len(fat_scores), 1) if fat_scores else None
+
+        # 루틴 실행
+        run_row = conn.execute(
+            "SELECT title, created_at FROM user_routine_runs WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+            (user.id,),
+        ).fetchone()
+        runs_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM user_routine_runs WHERE user_id = ?",
+            (user.id,),
+        ).fetchone()["c"]
+
+        return ReportSummary(
+            total_predictions=total_predictions,
+            last_fatigue=last_fatigue,
+            last_overtraining_risk=last_risk,
+            avg_fatigue=avg_fatigue,
+            routine_runs=runs_count,
+            last_run_title=run_row["title"] if run_row else None,
+            last_run_at=run_row["created_at"] if run_row else None,
+            last_roi_pct=last_roi_pct,
+            recent_windows=last_windows,
+        )
+    finally:
+        conn.close()
+
+
 @app.get("/api/overtraining-guard", response_model=List[GuardDay])
-def guard():
+def guard(authorization: Optional[str] = Header(default=None, alias="Authorization")):
+    _get_user_by_token(authorization)
     today = datetime.now().date()
     days: List[GuardDay] = []
     for i in range(14):
@@ -218,7 +700,8 @@ def guard():
 
 
 @app.get("/api/coach-insights")
-def coach_insights():
+def coach_insights(authorization: Optional[str] = Header(default=None, alias="Authorization")):
+    _get_user_by_token(authorization)
     return {
         "alerts": [
             "근육 피로 75% → 하체 회복 루틴 권장",
@@ -232,4 +715,3 @@ def coach_insights():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
-

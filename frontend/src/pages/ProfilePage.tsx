@@ -1,9 +1,15 @@
+import { useNavigate } from 'react-router-dom'
 import { useReveal } from '../hooks/useReveal'
+import { ExampleNotice, useExampleMode } from '../components/ExampleNotice'
+import { clearStoredToken } from '../auth'
 
 export function ProfilePage() {
   useReveal()
+  const navigate = useNavigate()
+  const exampleMode = useExampleMode()
   return (
     <main className="shell view view-page profile-page">
+      {exampleMode && <ExampleNotice />}
       <section className="profile-hero reveal">
         <div className="profile-hero-text">
           <p className="profile-hero-kicker">My Hyuga</p>
@@ -13,6 +19,20 @@ export function ProfilePage() {
             <span className="pill pill-soft">수면 변동폭 +1시간 이내</span>
             <span className="pill pill-yellow">회복 루틴 실행률 82%</span>
           </div>
+          {!exampleMode && (
+            <div style={{ marginTop: 12 }}>
+              <button
+                type="button"
+                className="btn btn-tonal"
+                onClick={() => {
+                  clearStoredToken()
+                  navigate('/')
+                }}
+              >
+                로그아웃
+              </button>
+            </div>
+          )}
         </div>
         <div className="profile-hero-avatar">
           <div className="avatar-circle">🐳</div>
