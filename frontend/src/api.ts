@@ -97,33 +97,36 @@ export async function fetchReportLatest(token: string) {
   return res.json() as Promise<ReportSummary>
 }
 
-export async function fetchNFABaseline(params: { age?: number; gender?: string; metric?: string }) {
+export async function fetchNFABaseline(params: { age?: number; gender?: string; metric?: string; page?: number; rows?: number; raw?: boolean }) {
   const qs = new URLSearchParams()
   if (params.age != null) qs.set('age', String(params.age))
   if (params.gender) qs.set('gender', params.gender)
   if (params.metric) qs.set('metric', params.metric)
+  if (params.page != null) qs.set('page', String(params.page))
+  if (params.rows != null) qs.set('rows', String(params.rows))
+  if (params.raw) qs.set('raw', 'true')
   const res = await fetch(`/api/nfa-baseline?${qs.toString()}`)
   if (!res.ok) throw new Error(await res.text())
   return res.json() as Promise<{ age_band: string; gender: string; metric: string; baseline_score: number; source: string }[]>
 }
 
-export async function fetchRecoverySpots(token: string, params: { lat?: number; lng?: number }) {
+export async function fetchRecoverySpots(token: string | undefined, params: { lat?: number; lng?: number }) {
   const qs = new URLSearchParams()
   if (params.lat != null) qs.set('lat', String(params.lat))
   if (params.lng != null) qs.set('lng', String(params.lng))
-  const res = await fetch(`/api/recovery-spots?${qs.toString()}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  })
+  const headers: Record<string, string> = {}
+  if (token) headers.Authorization = `Bearer ${token}`
+  const res = await fetch(`/api/recovery-spots?${qs.toString()}`, { headers })
   if (!res.ok) throw new Error(await res.text())
   return res.json() as Promise<{ name: string; category: string; lat: number; lng: number; is_open: boolean; distance_km?: number; safety_flag?: boolean }[]>
 }
 
-export async function fetchRecoveryCourses(token: string) {
-  const res = await fetch('/api/recovery-courses', {
-    headers: { Authorization: `Bearer ${token}` },
-  })
+export async function fetchRecoveryCourses(token?: string) {
+  const headers: Record<string, string> = {}
+  if (token) headers.Authorization = `Bearer ${token}`
+  const res = await fetch('/api/recovery-courses', { headers })
   if (!res.ok) throw new Error(await res.text())
-  return res.json() as Promise<{ title: string; category: string; location: string; eligible: boolean; note?: string; url?: string }[]>
+  return res.json() as Promise<{ title: string; category: string; location: string; eligible: boolean; note?: string; url?: string; lat?: number; lng?: number; distance_km?: number }[]>
 }
 
 // Auth

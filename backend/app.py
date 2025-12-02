@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, EmailStr
 from datetime import datetime, timedelta
 import requests
 from dotenv import load_dotenv
+from typing import Any
 
 
 app = FastAPI(title="Hyuga Recovery API", version="0.1.0")
@@ -113,6 +114,8 @@ class PredictOutput(BaseModel):
     fatigue_score: int
     recovery_windows: List[RecoveryWindow]
     overtraining_risk: Optional[str]
+    nfa_delta: Optional[int] = None
+    nfa_source: Optional[str] = None
 
 
 class ROIReportInput(BaseModel):
@@ -215,10 +218,13 @@ class RecoverySpot(BaseModel):
 class RecoveryCourse(BaseModel):
     title: str
     category: str
-    location: str
+    location: Optional[str] = None
     eligible: bool
     note: Optional[str] = None
     url: Optional[str] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    distance_km: Optional[float] = None
 
 
 class TodoCreate(BaseModel):
@@ -345,14 +351,90 @@ def _get_user_by_token(authorization: Optional[str]) -> UserPublic:
         conn.close()
 
 
+def _get_user_by_token_optional(authorization: Optional[str]) -> Optional[UserPublic]:
+    try:
+        return _get_user_by_token(authorization)
+    except HTTPException:
+        return None
+
+
 def _fetch_external(url: str, params: dict, headers: dict) -> Optional[dict]:
     try:
-        res = requests.get(url, params=params, headers=headers, timeout=6)
+        res = requests.get(url, params=params, headers=headers, timeout=8)
         if res.ok:
             return res.json()
-    except Exception:
-        return None
+        print(f"[external] {url} status={res.status_code} body={res.text[:200]}")
+    except Exception as e:
+        print(f"[external] error fetching {url} params={params} err={e}")
     return None
+
+
+def _nfa_reference(age: Optional[int] = None, gender: Optional[str] = None, metric: Optional[str] = None) -> Optional[tuple[int, str]]:
+    """NFA 기준 점수와 출처를 반환 (없으면 None)"""
+    url = os.getenv("NFA_API_URL")
+    key = os.getenv("NFA_API_KEY")
+    if not url or not key:
+        return None
+    params = {
+        "serviceKey": key,
+        "pageNo": 1,
+        "numOfRows": 1,
+        "resultType": "json",
+    }
+    if age is not None:
+        params["age_class"] = age
+    if gender:
+        params["sex"] = gender
+    if metric:
+        params["item"] = metric
+    clean_url = url.replace("https://https://", "https://").rstrip("?&/ ")
+    if "todz_nfa_test_result" not in clean_url.lower():
+        clean_url = clean_url.rstrip("/") + "/TODZ_NFA_TEST_RESULT_NEW"
+    data = _fetch_external(clean_url, params, {})
+    if data is None:
+        from urllib.parse import quote_plus
+        params["serviceKey"] = quote_plus(key)
+        data = _fetch_external(clean_url, params, {})
+    if data is None:
+        full_url = f"{clean_url}?serviceKey={key}&pageNo=1&numOfRows=1&resultType=json"
+        data = _fetch_external(full_url, {}, {})
+    if not data:
+        return None
+    items = None
+    if isinstance(data, dict) and "response" in data:
+        items = (
+            data.get("response", {})
+            .get("body", {})
+            .get("items", {})
+            .get("item", [])
+        )
+    elif isinstance(data, dict) and "body" in data:
+        items = (
+            data.get("body", {})
+            .get("items", {})
+            .get("item", [])
+        )
+    if isinstance(items, dict):
+        items = [items]
+    if not items:
+        return None
+    it = items[0]
+    try:
+        score = int(float(it.get("score") or it.get("item_f003") or it.get("item_f002") or it.get("item_f001") or 60))
+    except Exception:
+        score = 60
+    source = str(it.get("cert_gbn") or it.get("source") or "NFA")
+    return score, source
+
+
+def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    from math import radians, cos, sin, asin, sqrt
+
+    dlat = radians(lat2 - lat1)
+    dlng = radians(lng2 - lng1)
+    a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlng / 2) ** 2
+    c = 2 * asin(sqrt(a))
+    return 6371 * c
 
 
 def _todo_row_to_out(row: sqlite3.Row) -> TodoOut:
@@ -581,16 +663,23 @@ def predict(
         for w in windows:
             w.recommend_min = int(w.recommend_min * 1.1)
 
-    # NFA 비교 (샘플): 기준 60점 대비 차이
-    baseline_score = 60
-    nfa_delta = fatigue - baseline_score
+    nfa_delta = None
+    nfa_source = "NFA 샘플 기준 60점 대비"
+    ref = _nfa_reference()
+    if ref:
+        ref_score, ref_src = ref
+        nfa_delta = fatigue - ref_score
+        nfa_source = f"NFA {ref_score}점 기준 ({ref_src})"
+    else:
+        nfa_delta = fatigue - 60
 
-    result = PredictOutput(fatigue_score=fatigue, recovery_windows=windows, overtraining_risk=risk)
-    # 결과에 메타 정보 덧붙임
-    result_dict = result.model_dump()
-    result_dict["nfa_delta"] = nfa_delta
-    result_dict["nfa_source"] = "NFA 샘플 기준 60점 대비"
-    result = PredictOutput(**result_dict)
+    result = PredictOutput(
+        fatigue_score=fatigue,
+        recovery_windows=windows,
+        overtraining_risk=risk,
+        nfa_delta=nfa_delta,
+        nfa_source=nfa_source,
+    )
     # 저장
     conn = _get_db()
     try:
@@ -770,27 +859,115 @@ def coach_insights(authorization: Optional[str] = Header(default=None, alias="Au
     }
 
 
-@app.get("/api/nfa-baseline", response_model=List[NFABaselineRow])
+@app.get("/api/nfa-baseline", response_model=Any)
 def nfa_baseline(
     age: Optional[int] = Query(default=None, ge=10, le=90),
     gender: Optional[str] = None,
     metric: Optional[str] = None,
+    page: int = 1,
+    rows: int = 20,
+    raw: bool = Query(default=False, description="원본 항목 그대로 반환"),
 ):
     url = os.getenv("NFA_API_URL")
     key = os.getenv("NFA_API_KEY")
     if url and key:
-        data = _fetch_external(url, {"age": age, "gender": gender, "metric": metric, "api_key": key}, {})
-        if data and isinstance(data, list):
-            try:
-                return [NFABaselineRow(**row) for row in data]
-            except Exception:
-                pass
+        base_params = {
+            "serviceKey": key,
+            "pageNo": page,
+            "numOfRows": rows,
+            "resultType": "json",
+        }
+        if age is not None:
+            base_params["age_class"] = age
+        if gender:
+            base_params["sex"] = gender
+        if metric:
+            base_params["item"] = metric
+        clean_url = url.replace("https://https://", "https://").rstrip("?&/ ")
+        if "todz_nfa_test_result" not in clean_url.lower():
+            clean_url = clean_url.rstrip("/") + "/TODZ_NFA_TEST_RESULT_NEW"
+        data = _fetch_external(clean_url, base_params, {})
+        if data is None:
+            from urllib.parse import quote_plus
+            encoded_key = quote_plus(key)
+            alt_params = {**base_params, "serviceKey": encoded_key}
+            data = _fetch_external(clean_url, alt_params, {})
+        if data is None:
+            full_url = f"{clean_url}?serviceKey={key}&pageNo={page}&numOfRows={rows}&resultType=json"
+            if age is not None:
+                full_url += f"&age_class={age}"
+            if gender:
+                full_url += f"&sex={gender}"
+            if metric:
+                full_url += f"&item={metric}"
+            data = _fetch_external(full_url, {}, {})
+        # 디버그용: 외부 응답을 로그로 확인
+        print("NFA external raw:", data)
+        if data:
+            out: List[NFABaselineRow] = []
+            raw_items: List[Any] = []
+            # helper for safe number parsing
+            def _num(v):
+                try:
+                    return int(float(v))
+                except Exception:
+                    return 0
+            # 형태 1: response.body.items.item
+            if isinstance(data, dict) and "response" in data:
+                items = (
+                    data.get("response", {})
+                    .get("body", {})
+                    .get("items", {})
+                    .get("item", [])
+                )
+                if isinstance(items, dict):
+                    items = [items]
+                raw_items = items or []
+                for it in items or []:
+                    out.append(
+                        NFABaselineRow(
+                            age_band=str(it.get("age_class") or it.get("age_degree") or it.get("age") or ""),
+                            gender=str(it.get("test_sex") or it.get("sex") or it.get("gender") or ""),
+                            metric=str(it.get("item") or "recovery"),
+                            baseline_score=_num(it.get("score") or it.get("item_f003") or 0),
+                            source=str(it.get("cert_gbn") or "NFA"),
+                        )
+                    )
+            # 형태 2: body.items.item (response 래퍼 없음)
+            elif isinstance(data, dict) and "body" in data:
+                items = (
+                    data.get("body", {})
+                    .get("items", {})
+                    .get("item", [])
+                )
+                if isinstance(items, dict):
+                    items = [items]
+                raw_items = items or []
+                for it in items or []:
+                    out.append(
+                        NFABaselineRow(
+                            age_band=str(it.get("age_class") or it.get("age_degree") or it.get("age") or ""),
+                            gender=str(it.get("test_sex") or it.get("sex") or it.get("gender") or ""),
+                            metric=str(it.get("item") or "recovery"),
+                            baseline_score=_num(it.get("score") or it.get("item_f003") or 0),
+                            source=str(it.get("cert_gbn") or "NFA"),
+                        )
+                    )
+            elif isinstance(data, list):
+                try:
+                    out = [NFABaselineRow(**row) for row in data]
+                except Exception:
+                    out = []
+                raw_items = data
+            if raw and raw_items:
+                return raw_items
+            if out:
+                return out
     # fallback sample
-    sample = [
+    return [
         NFABaselineRow(age_band="30-39", gender="M", metric="recovery", baseline_score=60, source="NFA 샘플"),
         NFABaselineRow(age_band="30-39", gender="F", metric="recovery", baseline_score=58, source="NFA 샘플"),
     ]
-    return sample
 
 
 @app.get("/api/recovery-spots", response_model=List[RecoverySpot])
@@ -799,16 +976,65 @@ def recovery_spots(
     lng: Optional[float] = None,
     authorization: Optional[str] = Header(default=None, alias="Authorization"),
 ):
-    _get_user_by_token(authorization)
+    _get_user_by_token_optional(authorization)
     url = os.getenv("SPOT_API_URL")
     key = os.getenv("SPOT_API_KEY")
-    if url and key and lat and lng:
-        data = _fetch_external(url, {"lat": lat, "lng": lng, "api_key": key}, {})
-        if data and isinstance(data, list):
-            try:
-                return [RecoverySpot(**row) for row in data]
-            except Exception:
-                pass
+    if url and key:
+        params = {
+            "serviceKey": key,
+            "pageNo": 1,
+            "numOfRows": 20,
+            "resultType": "json",
+        }
+        clean_url = url.rstrip("?&")
+        data = _fetch_external(clean_url, params, {})
+        if data:
+            spots_out: List[RecoverySpot] = []
+            if isinstance(data, list):
+                try:
+                    spots_out = [RecoverySpot(**row) for row in data]
+                except Exception:
+                    spots_out = []
+            elif isinstance(data, dict) and "response" in data:
+                items = (
+                    data.get("response", {})
+                    .get("body", {})
+                    .get("items", {})
+                    .get("item", [])
+                )
+                if isinstance(items, dict):
+                    items = [items]
+                for it in items or []:
+                    name = it.get("faci_nm") or it.get("name")
+                    if not name:
+                        continue
+                    lat_val = it.get("faci_lat") or it.get("la") or it.get("lat") or it.get("ypos")
+                    lng_val = it.get("faci_lot") or it.get("lo") or it.get("lng") or it.get("xpos")
+                    try:
+                        lat_f = float(lat_val) if lat_val is not None else None
+                        lng_f = float(lng_val) if lng_val is not None else None
+                    except Exception:
+                        lat_f = None
+                        lng_f = None
+                    distance = None
+                    if lat is not None and lng is not None and lat_f is not None and lng_f is not None:
+                        distance = round(_haversine_km(lat, lng, lat_f, lng_f), 2)
+                    spots_out.append(
+                        RecoverySpot(
+                            name=name,
+                            category=it.get("ftype_nm") or it.get("fcob_nm") or it.get("faci_spec_lc") or it.get("category") or "시설",
+                            lat=lat_f or 0.0,
+                            lng=lng_f or 0.0,
+                            is_open=(it.get("faci_stat_nm") == "정상운영"),
+                            distance_km=distance,
+                            safety_flag=(it.get("atnm_chk_yn") == "Y"),
+                        )
+                    )
+            if lat is not None and lng is not None:
+                spots_out = [s for s in spots_out if s.lat and s.lng]
+                spots_out.sort(key=lambda s: s.distance_km or 9999)
+            return spots_out
+    # 외부 호출 실패 또는 URL/KEY 없으면 샘플
     return [
         RecoverySpot(name="중앙공원 산책로", category="산책", lat=37.5, lng=127.0, is_open=True, distance_km=1.2, safety_flag=True),
         RecoverySpot(name="시청 수영장", category="수영", lat=37.51, lng=127.01, is_open=False, distance_km=2.4, safety_flag=True),
@@ -817,19 +1043,96 @@ def recovery_spots(
 
 @app.get("/api/recovery-courses", response_model=List[RecoveryCourse])
 def recovery_courses(authorization: Optional[str] = Header(default=None, alias="Authorization")):
-    _get_user_by_token(authorization)
+    _get_user_by_token_optional(authorization)
     url = os.getenv("COURSES_API_URL")
     key = os.getenv("COURSES_API_KEY")
     if url and key:
-        data = _fetch_external(url, {"api_key": key}, {})
-        if data and isinstance(data, list):
-            try:
-                return [RecoveryCourse(**row) for row in data]
-            except Exception:
-                pass
+        params = {
+            "serviceKey": key,
+            "pageNo": 1,
+            "numOfRows": 20,
+            "resultType": "json",
+        }
+        # URL에 프로토콜이 중복된 경우를 대비해 정리
+        clean_url = url.replace("https://https://", "https://").rstrip("?&")
+        data = _fetch_external(clean_url, params, {})
+        if data:
+            out: List[RecoveryCourse] = []
+            # 공공데이터 포털 응답 형태 1: response.body.items.item
+            if isinstance(data, dict) and "response" in data:
+                items = (
+                    data.get("response", {})
+                    .get("body", {})
+                    .get("items", {})
+                    .get("item", [])
+                )
+                if isinstance(items, dict):
+                    items = [items]
+                for it in items or []:
+                    title = it.get("course_nm") or it.get("item_nm") or "강좌"
+                    category = it.get("item_nm") or it.get("item_cd") or ""
+                    location = it.get("lectr_nm") or it.get("course_seta_desc_cn") or ""
+                    note_parts = [it.get("lectr_weekday_val") or "", it.get("start_tm") or "", it.get("course_seta_desc_cn") or ""]
+                    note = " ".join([p for p in note_parts if p]).strip() or None
+                    lat_val = it.get("faci_lat") or it.get("lat")
+                    lng_val = it.get("faci_lot") or it.get("lng") or it.get("faci_lon")
+                    try:
+                        lat = float(lat_val) if lat_val not in (None, "") else None
+                        lng = float(lng_val) if lng_val not in (None, "") else None
+                    except Exception:
+                        lat = lng = None
+                    out.append(
+                        RecoveryCourse(
+                            title=title,
+                            category=category,
+                            location=location,
+                            eligible=True,
+                            note=note,
+                            url=None,
+                            lat=lat,
+                            lng=lng,
+                        )
+                    )
+            # 공공데이터 포털 응답 형태 2: header/body/items/item (response 래퍼 없음)
+            elif isinstance(data, dict) and "body" in data:
+                items = data.get("body", {}).get("items", {}).get("item", [])
+                if isinstance(items, dict):
+                    items = [items]
+                for it in items or []:
+                    title = it.get("course_nm") or it.get("item_nm") or "강좌"
+                    category = it.get("item_nm") or it.get("item_cd") or ""
+                    location = it.get("lectr_nm") or it.get("course_seta_desc_cn") or ""
+                    note_parts = [it.get("lectr_weekday_val") or "", it.get("start_tm") or "", it.get("course_seta_desc_cn") or ""]
+                    note = " ".join([p for p in note_parts if p]).strip() or None
+                    lat_val = it.get("faci_lat") or it.get("lat")
+                    lng_val = it.get("faci_lot") or it.get("lng") or it.get("faci_lon")
+                    try:
+                        lat = float(lat_val) if lat_val not in (None, "") else None
+                        lng = float(lng_val) if lng_val not in (None, "") else None
+                    except Exception:
+                        lat = lng = None
+                    out.append(
+                        RecoveryCourse(
+                            title=title,
+                            category=category,
+                            location=location,
+                            eligible=True,
+                            note=note,
+                            url=None,
+                            lat=lat,
+                            lng=lng,
+                        )
+                    )
+            elif isinstance(data, list):
+                try:
+                    out = [RecoveryCourse(**row) for row in data]
+                except Exception:
+                    out = []
+            if out:
+                return out
     return [
-        RecoveryCourse(title="요가 · 스포츠강좌이용권 적용", category="요가", location="시청 주민센터", eligible=True, note="저녁반", url=None),
-        RecoveryCourse(title="재활 필라테스", category="필라테스", location="스포츠 복지관", eligible=False, note="대기중", url=None),
+        RecoveryCourse(title="요가 · 스포츠강좌이용권 적용", category="요가", location="시청 주민센터", eligible=True, note="저녁반", url=None, lat=37.5, lng=127.0, distance_km=1.0),
+        RecoveryCourse(title="재활 필라테스", category="필라테스", location="스포츠 복지관", eligible=False, note="대기중", url=None, lat=37.51, lng=127.01, distance_km=2.3),
     ]
 
 

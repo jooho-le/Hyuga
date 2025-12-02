@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useReveal } from '../hooks/useReveal'
 import { ExampleNotice, useExampleMode } from '../components/ExampleNotice'
-import { fetchReportLatest, type ReportSummary } from '../api'
+import { fetchReportLatest, type ReportSummary, fetchNFABaseline } from '../api'
 import { getStoredToken } from '../auth'
 
 export function ReportPage() {
@@ -11,6 +11,8 @@ export function ReportPage() {
   const [report, setReport] = useState<ReportSummary | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [nfaRows, setNfaRows] = useState<any[]>([])
+  const [nfaError, setNfaError] = useState('')
 
   useEffect(() => {
     if (exampleMode) return
@@ -22,6 +24,14 @@ export function ReportPage() {
       .then(setReport)
       .catch(err => setError(err instanceof Error ? err.message : '리포트를 불러오지 못했습니다.'))
       .finally(() => setLoading(false))
+  }, [exampleMode])
+
+  useEffect(() => {
+    if (exampleMode) return
+    setNfaError('')
+    fetchNFABaseline({ raw: true, page: 1, rows: 6 })
+      .then(rows => setNfaRows(Array.isArray(rows) ? rows : []))
+      .catch(err => setNfaError(err instanceof Error ? err.message : 'NFA 기준을 불러오지 못했습니다.'))
   }, [exampleMode])
 
   return (
@@ -234,27 +244,61 @@ export function ReportPage() {
           </section>
         </>
       ) : (
-        <section className="section reveal">
-          <div className="card" style={{ background: '#fff7f3' }}>
-            <h3>내 회복 리포트</h3>
-            {loading && <p className="muted">불러오는 중...</p>}
-            {error && <p className="muted" style={{ color: 'var(--warning)' }}>{error}</p>}
-            {!loading && !error && report && report.total_predictions > 0 && (
-              <ul className="card-list">
-                <li>최근 피로도 점수: {report.last_fatigue ?? '-'} / 100</li>
-                <li>과훈련 위험: {report.last_overtraining_risk || '없음'}</li>
-                <li>평균 피로도: {report.avg_fatigue ?? '-'} 점</li>
-                <li>루틴 실행: {report.routine_runs}회</li>
-                {report.last_run_title && <li>최근 루틴: {report.last_run_title}</li>}
-                {report.last_roi_pct != null && <li>최근 ROI: +{report.last_roi_pct}%</li>}
-                {report.nfa_delta != null && <li>최근 NFA 대비: {report.nfa_delta >= 0 ? '+' : ''}{report.nfa_delta} (기준: {report.nfa_source})</li>}
-              </ul>
+        <>
+          <section className="section reveal">
+            <div className="card" style={{ background: '#fff7f3' }}>
+              <h3>내 회복 리포트</h3>
+              {loading && <p className="muted">불러오는 중...</p>}
+              {error && <p className="muted" style={{ color: 'var(--warning)' }}>{error}</p>}
+              {!loading && !error && report && report.total_predictions > 0 && (
+                <ul className="card-list">
+                  <li>최근 피로도 점수: {report.last_fatigue ?? '-'} / 100</li>
+                  <li>과훈련 위험: {report.last_overtraining_risk || '없음'}</li>
+                  <li>평균 피로도: {report.avg_fatigue ?? '-'} 점</li>
+                  <li>루틴 실행: {report.routine_runs}회</li>
+                  {report.last_run_title && <li>최근 루틴: {report.last_run_title}</li>}
+                  {report.last_roi_pct != null && <li>최근 ROI: +{report.last_roi_pct}%</li>}
+                  {report.nfa_delta != null && (
+                    <li>
+                      최근 NFA 대비: {report.nfa_delta >= 0 ? '+' : ''}
+                      {report.nfa_delta} (기준: {report.nfa_source || 'NFA'})
+                    </li>
+                  )}
+                </ul>
+              )}
+              {!loading && !error && (!report || report.total_predictions === 0) && (
+                <p className="muted">아직 저장된 리포트가 없습니다. 루틴 실행/피로도 계산 후 다시 확인하세요.</p>
+              )}
+            </div>
+          </section>
+
+          <section className="section reveal">
+            <div className="section-header">
+              <h2>NFA 기준선 샘플</h2>
+              <p className="section-sub">
+                최근 불러온 NFA 체력측정 샘플(디버그용)입니다. age_class·test_sex 기준으로 기준선을 산출합니다.
+              </p>
+            </div>
+            {nfaError && <p className="muted" style={{ color: 'var(--warning)' }}>{nfaError}</p>}
+            {!nfaError && (
+              <div className="cards-grid">
+                {nfaRows.length === 0 && <p className="muted">NFA 데이터를 불러오는 중이거나, 결과가 없습니다.</p>}
+                {nfaRows.map((row, idx) => (
+                  <article key={row.row_num || idx} className="card">
+                    <h3>
+                      {row.age_class || '-'}대 · {row.test_sex || '-'}
+                    </h3>
+                    <p className="muted">
+                      점수 예시: {row.item_f003 || row.item_f002 || '-'} / 추천: {row.pres_note || '제공 없음'}
+                    </p>
+                    <p className="muted">측정연월: {row.test_ym || '-'}</p>
+                    <p className="muted">등급: {row.cert_gbn || '-'}</p>
+                  </article>
+                ))}
+              </div>
             )}
-            {!loading && !error && (!report || report.total_predictions === 0) && (
-              <p className="muted">아직 저장된 리포트가 없습니다. 루틴 실행/피로도 계산 후 다시 확인하세요.</p>
-            )}
-          </div>
-        </section>
+          </section>
+        </>
       )}
     </main>
   )
