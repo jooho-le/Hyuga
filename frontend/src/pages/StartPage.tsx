@@ -222,6 +222,12 @@ export function StartPage() {
                   ? '과훈련 위험: 주의'
                   : '안정 상태'}
               </p>
+              {result.nfa_delta != null && (
+                <p className="routine-tags">
+                  NFA 대비 {result.nfa_delta >= 0 ? '+' : ''}
+                  {result.nfa_delta} ({result.nfa_source || 'NFA 기준'})
+                </p>
+              )}
             </article>
             {result.recovery_windows.map(w => (
               <article key={w.label} className="card">

@@ -20,3 +20,8 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+
+.env
+.env.local
+.env.*.local
+.cache/

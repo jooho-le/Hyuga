@@ -24,6 +24,8 @@ export async function predict(inp: WorkoutInput, token?: string) {
     fatigue_score: number
     recovery_windows: { label: string; recommend_min: number; expected_roi_pct: number; note?: string }[]
     overtraining_risk?: 'yellow'|'red'|null
+    nfa_delta?: number
+    nfa_source?: string
   }>
 }
 
@@ -83,6 +85,8 @@ export type ReportSummary = {
   last_run_at: string | null
   last_roi_pct: number | null
   recent_windows: { label: string; recommend_min: number; expected_roi_pct: number; note?: string }[] | null
+  nfa_delta?: number | null
+  nfa_source?: string | null
 }
 
 export async function fetchReportLatest(token: string) {
@@ -91,6 +95,35 @@ export async function fetchReportLatest(token: string) {
   })
   if (!res.ok) throw new Error(await res.text())
   return res.json() as Promise<ReportSummary>
+}
+
+export async function fetchNFABaseline(params: { age?: number; gender?: string; metric?: string }) {
+  const qs = new URLSearchParams()
+  if (params.age != null) qs.set('age', String(params.age))
+  if (params.gender) qs.set('gender', params.gender)
+  if (params.metric) qs.set('metric', params.metric)
+  const res = await fetch(`/api/nfa-baseline?${qs.toString()}`)
+  if (!res.ok) throw new Error(await res.text())
+  return res.json() as Promise<{ age_band: string; gender: string; metric: string; baseline_score: number; source: string }[]>
+}
+
+export async function fetchRecoverySpots(token: string, params: { lat?: number; lng?: number }) {
+  const qs = new URLSearchParams()
+  if (params.lat != null) qs.set('lat', String(params.lat))
+  if (params.lng != null) qs.set('lng', String(params.lng))
+  const res = await fetch(`/api/recovery-spots?${qs.toString()}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json() as Promise<{ name: string; category: string; lat: number; lng: number; is_open: boolean; distance_km?: number; safety_flag?: boolean }[]>
+}
+
+export async function fetchRecoveryCourses(token: string) {
+  const res = await fetch('/api/recovery-courses', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json() as Promise<{ title: string; category: string; location: string; eligible: boolean; note?: string; url?: string }[]>
 }
 
 // Auth

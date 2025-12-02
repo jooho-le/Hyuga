@@ -3,11 +3,14 @@ import hashlib
 import secrets
 import sqlite3
 import json
+import os
 from pathlib import Path
-from fastapi import FastAPI, Header, HTTPException, status
+from fastapi import FastAPI, Header, HTTPException, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, EmailStr
 from datetime import datetime, timedelta
+import requests
+from dotenv import load_dotenv
 
 
 app = FastAPI(title="Hyuga Recovery API", version="0.1.0")
@@ -21,6 +24,12 @@ app.add_middleware(
 )
 
 DB_PATH = Path(__file__).parent / "hyuga.db"
+ENV_PATH = Path(__file__).parent / ".env"
+
+if ENV_PATH.exists():
+  load_dotenv(ENV_PATH)
+else:
+  load_dotenv()
 
 
 def _get_db():
@@ -181,6 +190,35 @@ class ReportSummary(BaseModel):
     last_run_at: Optional[str]
     last_roi_pct: Optional[int]
     recent_windows: Optional[List[RecoveryWindow]]
+    nfa_delta: Optional[int] = None
+    nfa_source: Optional[str] = None
+
+
+class NFABaselineRow(BaseModel):
+    age_band: str
+    gender: str
+    metric: str
+    baseline_score: int
+    source: str
+
+
+class RecoverySpot(BaseModel):
+    name: str
+    category: str
+    lat: float
+    lng: float
+    is_open: bool
+    distance_km: Optional[float] = None
+    safety_flag: Optional[bool] = None
+
+
+class RecoveryCourse(BaseModel):
+    title: str
+    category: str
+    location: str
+    eligible: bool
+    note: Optional[str] = None
+    url: Optional[str] = None
 
 
 class TodoCreate(BaseModel):
@@ -305,6 +343,16 @@ def _get_user_by_token(authorization: Optional[str]) -> UserPublic:
         return _row_to_user(row)
     finally:
         conn.close()
+
+
+def _fetch_external(url: str, params: dict, headers: dict) -> Optional[dict]:
+    try:
+        res = requests.get(url, params=params, headers=headers, timeout=6)
+        if res.ok:
+            return res.json()
+    except Exception:
+        return None
+    return None
 
 
 def _todo_row_to_out(row: sqlite3.Row) -> TodoOut:
@@ -533,7 +581,16 @@ def predict(
         for w in windows:
             w.recommend_min = int(w.recommend_min * 1.1)
 
+    # NFA 비교 (샘플): 기준 60점 대비 차이
+    baseline_score = 60
+    nfa_delta = fatigue - baseline_score
+
     result = PredictOutput(fatigue_score=fatigue, recovery_windows=windows, overtraining_risk=risk)
+    # 결과에 메타 정보 덧붙임
+    result_dict = result.model_dump()
+    result_dict["nfa_delta"] = nfa_delta
+    result_dict["nfa_source"] = "NFA 샘플 기준 60점 대비"
+    result = PredictOutput(**result_dict)
     # 저장
     conn = _get_db()
     try:
@@ -676,6 +733,8 @@ def report_latest(authorization: Optional[str] = Header(default=None, alias="Aut
             last_run_at=run_row["created_at"] if run_row else None,
             last_roi_pct=last_roi_pct,
             recent_windows=last_windows,
+            nfa_delta=last_fatigue - 60 if last_fatigue is not None else None,
+            nfa_source="NFA 샘플 기준 60점 대비",
         )
     finally:
         conn.close()
@@ -709,6 +768,69 @@ def coach_insights(authorization: Optional[str] = Header(default=None, alias="Au
             "수면부채 1.5시간 → 파워냅 20분 제안",
         ]
     }
+
+
+@app.get("/api/nfa-baseline", response_model=List[NFABaselineRow])
+def nfa_baseline(
+    age: Optional[int] = Query(default=None, ge=10, le=90),
+    gender: Optional[str] = None,
+    metric: Optional[str] = None,
+):
+    url = os.getenv("NFA_API_URL")
+    key = os.getenv("NFA_API_KEY")
+    if url and key:
+        data = _fetch_external(url, {"age": age, "gender": gender, "metric": metric, "api_key": key}, {})
+        if data and isinstance(data, list):
+            try:
+                return [NFABaselineRow(**row) for row in data]
+            except Exception:
+                pass
+    # fallback sample
+    sample = [
+        NFABaselineRow(age_band="30-39", gender="M", metric="recovery", baseline_score=60, source="NFA 샘플"),
+        NFABaselineRow(age_band="30-39", gender="F", metric="recovery", baseline_score=58, source="NFA 샘플"),
+    ]
+    return sample
+
+
+@app.get("/api/recovery-spots", response_model=List[RecoverySpot])
+def recovery_spots(
+    lat: Optional[float] = None,
+    lng: Optional[float] = None,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+):
+    _get_user_by_token(authorization)
+    url = os.getenv("SPOT_API_URL")
+    key = os.getenv("SPOT_API_KEY")
+    if url and key and lat and lng:
+        data = _fetch_external(url, {"lat": lat, "lng": lng, "api_key": key}, {})
+        if data and isinstance(data, list):
+            try:
+                return [RecoverySpot(**row) for row in data]
+            except Exception:
+                pass
+    return [
+        RecoverySpot(name="중앙공원 산책로", category="산책", lat=37.5, lng=127.0, is_open=True, distance_km=1.2, safety_flag=True),
+        RecoverySpot(name="시청 수영장", category="수영", lat=37.51, lng=127.01, is_open=False, distance_km=2.4, safety_flag=True),
+    ]
+
+
+@app.get("/api/recovery-courses", response_model=List[RecoveryCourse])
+def recovery_courses(authorization: Optional[str] = Header(default=None, alias="Authorization")):
+    _get_user_by_token(authorization)
+    url = os.getenv("COURSES_API_URL")
+    key = os.getenv("COURSES_API_KEY")
+    if url and key:
+        data = _fetch_external(url, {"api_key": key}, {})
+        if data and isinstance(data, list):
+            try:
+                return [RecoveryCourse(**row) for row in data]
+            except Exception:
+                pass
+    return [
+        RecoveryCourse(title="요가 · 스포츠강좌이용권 적용", category="요가", location="시청 주민센터", eligible=True, note="저녁반", url=None),
+        RecoveryCourse(title="재활 필라테스", category="필라테스", location="스포츠 복지관", eligible=False, note="대기중", url=None),
+    ]
 
 
 # Entry

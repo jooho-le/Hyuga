@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState, FormEvent } from 'react'
+import { useEffect, useMemo, useState, FormEvent, useRef } from 'react'
 import dayjs from 'dayjs'
 import { useReveal } from '../hooks/useReveal'
 import { HabitCard, ReminderCard } from '../components/RoutineCards'
 import { ExampleNotice, useExampleMode } from '../components/ExampleNotice'
-import { logRoutineRun } from '../api'
+import { logRoutineRun, fetchRecoverySpots, fetchRecoveryCourses } from '../api'
 import { getStoredToken } from '../auth'
+import { Loader } from '@googlemaps/js-api-loader'
 
 type RoutineTodo = { title: string; date: string; time: string }
 
@@ -22,6 +23,12 @@ export function RoutinesPage() {
   const [selectedQuick, setSelectedQuick] = useState<{ title: string; time?: string } | null>(null)
   const [showModal, setShowModal] = useState(false)
   const [logMsg, setLogMsg] = useState('')
+  const [spots, setSpots] = useState<{ name: string; category: string; is_open: boolean; distance_km?: number; lat?: number; lng?: number }[]>([])
+  const [courses, setCourses] = useState<{ title: string; category: string; eligible: boolean; note?: string; url?: string }[]>([])
+  const [spotsError, setSpotsError] = useState('')
+  const [coursesError, setCoursesError] = useState('')
+  const mapRef = useRef<HTMLDivElement | null>(null)
+  const [mapError, setMapError] = useState('')
 
   useEffect(() => {
     if (exampleMode) {
@@ -35,6 +42,54 @@ export function RoutinesPage() {
       setSelectedRun('')
     }
   }, [exampleMode, today])
+
+  // 시설/강좌 예시 또는 실데이터
+  useEffect(() => {
+    const token = getStoredToken()
+    if (exampleMode || !token) {
+      setSpots([
+        { name: '중앙공원 산책로', category: '산책', is_open: true, distance_km: 1.2, lat: 37.5, lng: 127.0 },
+        { name: '시청 수영장', category: '수영', is_open: false, distance_km: 2.4, lat: 37.51, lng: 127.01 },
+      ])
+      setCourses([
+        { title: '요가 · 이용권 적용', category: '요가', eligible: true, note: '저녁반', url: 'https://example.com/course/yoga' },
+        { title: '재활 필라테스', category: '필라테스', eligible: false, note: '대기중', url: 'https://example.com/course/pilates' },
+      ])
+      return
+    }
+    fetchRecoverySpots(token, {}).then(setSpots).catch(err => setSpotsError(err instanceof Error ? err.message : '시설을 불러오지 못했습니다.'))
+    fetchRecoveryCourses(token).then(setCourses).catch(err => setCoursesError(err instanceof Error ? err.message : '강좌를 불러오지 못했습니다.'))
+  }, [exampleMode])
+
+  // 지도 렌더 (구글 맵)
+  useEffect(() => {
+    const apiKey = import.meta.env.VITE_GOOGLE_MAPS_KEY
+    if (!apiKey || !mapRef.current) {
+      setMapError(apiKey ? '' : '지도 키가 설정되지 않았습니다.')
+      return
+    }
+    if (!spots.length) return
+    const loader = new Loader({ apiKey, version: 'weekly' })
+    loader
+      .load()
+      .then(() => {
+        const center = { lat: spots[0].lat || 37.5, lng: spots[0].lng || 127.0 }
+        const map = new google.maps.Map(mapRef.current!, {
+          center,
+          zoom: 13,
+        })
+        spots.forEach(s => {
+          if (s.lat && s.lng) {
+            new google.maps.Marker({
+              position: { lat: s.lat, lng: s.lng },
+              map,
+              title: s.name,
+            })
+          }
+        })
+      })
+      .catch(() => setMapError('지도를 불러오지 못했습니다.'))
+  }, [spots])
 
   useEffect(() => {
     if (!selectedRun && todos[0]) setSelectedRun(todos[0].title)
@@ -346,6 +401,56 @@ export function RoutinesPage() {
             )}
             {logMsg && <p className="muted">{logMsg}</p>}
           </article>
+        </div>
+      </section>
+
+      <section className="section reveal">
+        <div className="section-header">
+          <h2>근처 회복 장소</h2>
+          <p className="section-sub">지금 열려있는 산책/수영/요가 등 저강도 회복 옵션을 보여드립니다.</p>
+        </div>
+        {spotsError && <p className="muted" style={{ color: 'var(--warning)' }}>{spotsError}</p>}
+        {mapError && <p className="muted" style={{ color: 'var(--warning)' }}>{mapError}</p>}
+        <div style={{ height: 300, borderRadius: 16, overflow: 'hidden', marginBottom: 16 }} ref={mapRef} />
+        <div className="cards-grid">
+          {spots.map(s => (
+            <article key={s.name} className="card">
+              <h3>{s.name}</h3>
+              <p className="muted">{s.category}</p>
+              <p>{s.is_open ? '지금 이용 가능' : '지금은 운영 종료'}</p>
+              {s.distance_km != null && <p className="muted">약 {s.distance_km} km</p>}
+            </article>
+          ))}
+          {spots.length === 0 && <p className="muted">표시할 장소가 없습니다.</p>}
+        </div>
+      </section>
+
+      <section className="section reveal">
+        <div className="section-header">
+          <h2>이용권 적용 가능 강좌</h2>
+          <p className="section-sub">스포츠강좌/이용권으로 참여할 수 있는 회복 옵션을 보여드립니다.</p>
+        </div>
+        {coursesError && <p className="muted" style={{ color: 'var(--warning)' }}>{coursesError}</p>}
+        <div className="cards-grid">
+          {courses.map(c => {
+            const safeUrl = c.url && !c.url.includes('example.com') ? c.url : null
+            return (
+              <article key={c.title} className="card">
+                <h3>{c.title}</h3>
+                <p className="muted">{c.category}</p>
+                <p>{c.eligible ? '이용권 적용 가능' : '이용권 미적용/대기'}</p>
+                {c.note && <p className="routine-tags">{c.note}</p>}
+                {safeUrl ? (
+                  <a className="btn btn-chip" href={safeUrl} target="_blank" rel="noreferrer">
+                    자세히 보기
+                  </a>
+                ) : (
+                  <p className="muted">제공된 링크 없음</p>
+                )}
+              </article>
+            )
+          })}
+          {courses.length === 0 && <p className="muted">표시할 강좌가 없습니다.</p>}
         </div>
       </section>
 

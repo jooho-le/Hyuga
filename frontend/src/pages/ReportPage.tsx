@@ -247,6 +247,7 @@ export function ReportPage() {
                 <li>루틴 실행: {report.routine_runs}회</li>
                 {report.last_run_title && <li>최근 루틴: {report.last_run_title}</li>}
                 {report.last_roi_pct != null && <li>최근 ROI: +{report.last_roi_pct}%</li>}
+                {report.nfa_delta != null && <li>최근 NFA 대비: {report.nfa_delta >= 0 ? '+' : ''}{report.nfa_delta} (기준: {report.nfa_source})</li>}
               </ul>
             )}
             {!loading && !error && (!report || report.total_predictions === 0) && (
