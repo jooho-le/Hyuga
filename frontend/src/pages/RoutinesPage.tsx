@@ -42,8 +42,8 @@ export function RoutinesPage() {
   const [mapError, setMapError] = useState('')
   const [courseMapError, setCourseMapError] = useState('')
   const [userCoords, setUserCoords] = useState<{ lat: number; lng: number } | null>(null)
-  const [mapInstance, setMapInstance] = useState<google.maps.Map | null>(null)
-  const [courseMapInstance, setCourseMapInstance] = useState<google.maps.Map | null>(null)
+  const [mapInstance, setMapInstance] = useState<any>(null)
+  const [courseMapInstance, setCourseMapInstance] = useState<any>(null)
   const [showAllSpots, setShowAllSpots] = useState(false)
   const [showAllCourses, setShowAllCourses] = useState(false)
 
@@ -80,7 +80,8 @@ export function RoutinesPage() {
 
   // 시설/강좌 예시 또는 실데이터
   useEffect(() => {
-    const token = getStoredToken()
+    const storedToken = getStoredToken()
+    const token = storedToken ?? undefined
     setSpots([]) // clear before fetch
     fetchRecoverySpots(token, { lat: userCoords?.lat, lng: userCoords?.lng })
       .then(setSpots)
@@ -604,33 +605,69 @@ export function RoutinesPage() {
           )}
         </div>
         <div className="cards-grid" style={{ marginTop: 12 }}>
-          {showAllCourses && courses.length > 0 && courses.map((c, idx) => {
-            const safeUrl = c.url && !c.url.includes('example.com') ? c.url : null
-            return (
-              <article key={`all-${c.title}-${idx}`} className="card">
-                <h3>{c.title}</h3>
-                <p className="muted">{c.category}</p>
-                <p>{c.eligible ? '이용권 적용 가능' : '이용권 미적용/대기'}</p>
-                {c.note && <p className="routine-tags">{c.note}</p>}
-                {c.distance_km != null && <p className="muted">약 {c.distance_km} km</p>}
-                {safeUrl ? (
-                  <a className="btn btn-chip" href={safeUrl} target="_blank" rel="noreferrer">
-                    자세히 보기
-                  </a>
-                ) : (
-                  <p className="muted">제공된 링크 없음</p>
-                )}
-              </article>
-            )
-          })}
+          {showAllCourses &&
+            courses.length > 0 &&
+            courses.map((c, idx) => {
+              const safeUrl = c.url && !c.url.includes('example.com') ? c.url : null
+              const eligibleLabel = c.eligible ? '이용권 적용 가능' : '이용권 미적용/대기'
+
+              return (
+                <article key={`all-${c.title}-${idx}`} className="card course-card">
+                  <h3 className="card-title">{c.title}</h3>
+                  <p className="muted course-category">{c.category}</p>
+                  <p
+                    className={`course-eligible ${
+                      c.eligible ? 'course-eligible-ok' : 'course-eligible-wait'
+                    }`}
+                  >
+                    {eligibleLabel}
+                  </p>
+
+                  {c.note && (() => {
+                    const rawNote = String(c.note)
+                    const timeMatch = rawNote.match(/^\s*\d{7}\s+\d{1,2}:\d{2}/)
+
+                    if (!timeMatch) {
+                      return <p className="course-note">{rawNote}</p>
+                    }
+
+                    const prefix = timeMatch[0]
+                    const rest = rawNote.slice(prefix.length).trimStart()
+
+                    return (
+                      <p className="course-note">
+                        {prefix}
+                        {rest && (
+                          <>
+                            <br />
+                            {rest}
+                          </>
+                        )}
+                      </p>
+                    )
+                  })()}
+
+                  <div className="course-meta">
+                    {c.distance_km != null && (
+                      <span className="course-distance">약 {c.distance_km} km</span>
+                    )}
+                    {safeUrl ? (
+                      <a
+                        className="btn btn-chip course-link"
+                        href={safeUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        자세히 보기
+                      </a>
+                    ) : (
+                      <span className="muted">제공된 링크 없음</span>
+                    )}
+                  </div>
+                </article>
+              )
+            })}
         </div>
-        {!showAllCourses && courses.length > displayCourses.length && (
-          <div style={{ marginTop: 8 }}>
-            <button type="button" className="btn btn-tonal" onClick={() => setShowAllCourses(true)}>
-              모든 강좌 보기
-            </button>
-          </div>
-        )}
       </section>
 
       {showModal && selectedQuick && (

@@ -276,27 +276,35 @@ export function ReportPage() {
             <div className="section-header">
               <h2>NFA 기준선 샘플</h2>
               <p className="section-sub">
-                최근 불러온 NFA 체력측정 샘플(디버그용)입니다. age_class·test_sex 기준으로 기준선을 산출합니다.
+                최근 불러온 NFA 체력측정입니다.
               </p>
             </div>
-            {nfaError && <p className="muted" style={{ color: 'var(--warning)' }}>{nfaError}</p>}
-            {!nfaError && (
-              <div className="cards-grid">
-                {nfaRows.length === 0 && <p className="muted">NFA 데이터를 불러오는 중이거나, 결과가 없습니다.</p>}
-                {nfaRows.map((row, idx) => (
-                  <article key={row.row_num || idx} className="card">
-                    <h3>
+              {nfaRows.map((row, idx) => (
+                <article key={row.row_num || idx} className="card">
+                  <div className="card-head">
+                    <h3 className="card-title">
                       {row.age_class || '-'}대 · {row.test_sex || '-'}
                     </h3>
+                    <span className="routine-tags">
+                      {row.cert_gbn ? `등급 ${row.cert_gbn}` : '등급 정보 없음'}
+                    </span>
+                  </div>
+
+                  <p className="card-minutes">
+                    측정연월 {row.test_ym || '-'}
+                  </p>
+
+                  <p className="muted">
+                    점수 예시: <strong>{row.item_f003 || row.item_f002 || '-'}</strong>
+                  </p>
+
+                  {row.pres_note && (
                     <p className="muted">
-                      점수 예시: {row.item_f003 || row.item_f002 || '-'} / 추천: {row.pres_note || '제공 없음'}
+                      추천: {row.pres_note}
                     </p>
-                    <p className="muted">측정연월: {row.test_ym || '-'}</p>
-                    <p className="muted">등급: {row.cert_gbn || '-'}</p>
-                  </article>
-                ))}
-              </div>
-            )}
+                  )}
+                </article>
+              ))}
           </section>
         </>
       )}

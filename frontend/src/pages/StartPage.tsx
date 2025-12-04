@@ -18,6 +18,8 @@ export function StartPage() {
     fatigue_score: number
     recovery_windows: { label: string; recommend_min: number; expected_roi_pct: number; note?: string }[]
     overtraining_risk?: 'yellow' | 'red' | null
+    nfa_delta?: number | null
+    nfa_source?: string | null
   } | null>(null)
   const [status, setStatus] = useState('')
   const resultRef = useRef<HTMLDivElement | null>(null)
