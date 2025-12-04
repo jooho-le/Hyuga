@@ -6,13 +6,17 @@ __pycache__/
 *.sqlite3
 venv/
 .venv/
+backend/.venv/
+frontend/.venv/
 
 # Node / frontend
 frontend/node_modules/
 frontend/dist/
+dist/
 
 # Logs
 *.log
+firebase-debug.log
 
 # OS / editor junk
 .DS_Store
@@ -25,3 +29,9 @@ Thumbs.db
 .env.local
 .env.*.local
 .cache/
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Firebase local state
+.firebase/
